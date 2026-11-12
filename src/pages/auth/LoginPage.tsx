@@ -1,15 +1,24 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import AuthLayout from '@/pages/auth/components/AuthLayout';
+import AuthAlert from '@/pages/auth/components/AuthAlert';
 import { supabase } from '@/lib/supabase';
+import { AUTH_ROUTES, authCallbackUrl, authErrorMessage, validateOrdinaryPostAuthNext } from '@/lib/auth';
+import { useResendCooldown } from '@/hooks/useResendCooldown';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const next = searchParams.get('next');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const [needsConfirmation, setNeedsConfirmation] = useState(false);
+  const [resending, setResending] = useState(false);
+  const cooldown = useResendCooldown(45);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -19,26 +28,44 @@ export default function LoginPage() {
     }
     setLoading(true);
     setError('');
+    setStatus('');
+    setNeedsConfirmation(false);
     try {
       const { error: authError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
       if (authError) {
-        const message = authError.message.toLowerCase();
-        if (message.includes('invalid login')) {
-          throw new Error('Correo o contraseña incorrectos. Verificá tus datos e intentá de nuevo.');
+        if (authError.message.toLowerCase().includes('email not confirmed')) {
+          setNeedsConfirmation(true);
         }
-        if (message.includes('email not confirmed')) {
-          throw new Error('Tu correo todavía no está confirmado. Revisá tu bandeja de entrada.');
-        }
-        throw new Error(authError.message);
+        throw new Error(authErrorMessage(authError.message));
       }
-      navigate('/mi-cuenta');
+      navigate(validateOrdinaryPostAuthNext(next, AUTH_ROUTES.account), { replace: true });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'No pudimos iniciar sesión.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!email.trim() || !cooldown.ready) return;
+    setResending(true);
+    setStatus('');
+    try {
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email: email.trim(),
+        options: { emailRedirectTo: authCallbackUrl(AUTH_ROUTES.account) },
+      });
+      if (resendError) throw new Error(authErrorMessage(resendError.message));
+      cooldown.start();
+      setStatus('Te enviamos un código nuevo a tu correo. También podés abrir el enlace del mensaje.');
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'No pudimos reenviar el correo.');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -53,7 +80,7 @@ export default function LoginPage() {
       footer={
         <p>
           ¿Todavía no tenés cuenta?{' '}
-          <Link to="/registro" className="cursor-pointer font-bold text-primary-700 hover:text-primary-800">
+          <Link to={AUTH_ROUTES.register} className="cursor-pointer font-bold text-primary-700 hover:text-primary-800">
             Crear cuenta gratis
           </Link>
         </p>
@@ -78,9 +105,17 @@ export default function LoginPage() {
         </div>
 
         <div className="min-w-0">
-          <label className="label-base" htmlFor="login-password">
-            Contraseña
-          </label>
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <label className="label-base mb-0" htmlFor="login-password">
+              Contraseña
+            </label>
+            <Link
+              to={AUTH_ROUTES.forgot}
+              className="cursor-pointer whitespace-nowrap text-xs font-semibold text-foreground-600 transition hover:text-foreground-950"
+            >
+              ¿Olvidaste tu contraseña?
+            </Link>
+          </div>
           <div className="relative">
             <input
               id="login-password"
@@ -104,11 +139,34 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {error && (
-          <p className="flex items-start gap-2 rounded-xl bg-primary-50 px-3 py-2.5 text-xs font-medium text-primary-800">
-            <i className="ri-error-warning-line mt-0.5" aria-hidden="true" />
-            {error}
-          </p>
+        {error && <AuthAlert variant="error">{error}</AuthAlert>}
+        {status && <AuthAlert variant="success">{status}</AuthAlert>}
+
+        {needsConfirmation && (
+          <div className="flex flex-col gap-2 rounded-xl border border-dashed border-background-300 px-3 py-3">
+            <p className="text-xs leading-relaxed text-foreground-600">
+              Podés reenviar el correo de confirmación a <strong className="text-foreground-900">{email}</strong> y
+              volver a intentar.
+            </p>
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resending || !cooldown.ready}
+              className="btn-outline self-start px-4 py-2 text-xs"
+            >
+              {resending ? (
+                <>
+                  <i className="ri-loader-4-line animate-spin" aria-hidden="true" /> Enviando…
+                </>
+              ) : cooldown.ready ? (
+                <>
+                  <i className="ri-mail-send-line" aria-hidden="true" /> Reenviar confirmación
+                </>
+              ) : (
+                <>Reenviar en {cooldown.remaining}s</>
+              )}
+            </button>
+          </div>
         )}
 
         <button type="submit" disabled={loading} className="btn-primary mt-1 w-full py-3.5">
@@ -124,6 +182,10 @@ export default function LoginPage() {
             </>
           )}
         </button>
+
+        <p className="text-center text-xs leading-relaxed text-foreground-500">
+          Al ingresar aceptás los términos y la política de privacidad de Motora.
+        </p>
       </form>
     </AuthLayout>
   );

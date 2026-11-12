@@ -76,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         id: userId,
         full_name: typeof metadata.full_name === 'string' ? metadata.full_name : '',
         phone: typeof metadata.phone === 'string' ? metadata.phone : '',
-        province: '',
+        province: typeof metadata.province === 'string' ? metadata.province : '',
       };
       const { data: created } = await supabase
         .from('profiles')
